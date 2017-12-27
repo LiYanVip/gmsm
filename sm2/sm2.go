@@ -189,27 +189,52 @@ func Sign(priv *PrivateKey, hash []byte) (r, s *big.Int, err error) {
 	e := new(big.Int).SetBytes(hash)
 	for { // 调整算法细节以实现SM2
 		for {
+			//产生随机数k,1<=k<=N-1
 			k, err = randFieldElement(c, csprng)
 			if err != nil {
 				r = nil
 				return
 			}
+
+			//计算[k]G
 			r, _ = priv.Curve.ScalarBaseMult(k.Bytes())
+
+			//r = (e+x) mod N
 			r.Add(r, e)
 			r.Mod(r, N)
-			if r.Sign() != 0 {
-				break
-			}
-			if t := new(big.Int).Add(r, k); t.Cmp(N) == 0 {
-				break
+
+			//r是否为0或者r+k是否为N
+			if r.Sign() == 0 {
+				continue
+			}else {
+				if t := new(big.Int).Add(r, k); t.Cmp(N) == 0 {
+					continue
+				}else {
+					break
+				}
 			}
 		}
+
+		//计算r.D
 		rD := new(big.Int).Mul(priv.D, r)
+		rD.Mod(rD,N)
+
+		//计算k-r.D
 		s = new(big.Int).Sub(k, rD)
+		s.Mod(s,N)
+
+		//计算1+D
 		d1 := new(big.Int).Add(priv.D, one)
+		d1.Mod(d1,N)
+
+		//计算1/(1+D)
 		d1Inv := new(big.Int).ModInverse(d1, N)
+
+		//计算s
 		s.Mul(s, d1Inv)
 		s.Mod(s, N)
+
+		//s是否为0
 		if s.Sign() != 0 {
 			break
 		}
@@ -221,29 +246,35 @@ func Verify(pub *PublicKey, hash []byte, r, s *big.Int) bool {
 	c := pub.Curve
 	N := c.Params().N
 
-	if r.Sign() <= 0 || s.Sign() <= 0 {
+	//1<=r<=N-1
+	if r.Sign() <= 0 || r.Cmp(N) >= 0 {
 		return false
 	}
-	if r.Cmp(N) >= 0 || s.Cmp(N) >= 0 {
+
+	//1<=s<=N-1
+	if s.Sign() <= 0 || s.Cmp(N) >= 0 {
 		return false
 	}
 
 	// 调整算法细节以实现SM2
 	t := new(big.Int).Add(r, s)
 	t.Mod(t, N)
-	if N.Sign() == 0 {
+
+	//t是否为0
+	if t.Sign() == 0 {
 		return false
 	}
 
-	var x *big.Int
+	var R *big.Int
 	x1, y1 := c.ScalarBaseMult(s.Bytes())
 	x2, y2 := c.ScalarMult(pub.X, pub.Y, t.Bytes())
-	x, _ = c.Add(x1, y1, x2, y2)
+	R, _ = c.Add(x1, y1, x2, y2)
 
 	e := new(big.Int).SetBytes(hash)
-	x.Add(x, e)
-	x.Mod(x, N)
-	return x.Cmp(r) == 0
+
+	R.Add(R, e)
+	R.Mod(R, N)
+	return R.Cmp(r) == 0
 }
 
 // 32byte
@@ -272,7 +303,7 @@ func Encrypt(pub *PublicKey, data []byte) ([]byte, error) {
 	leny2 := 0
 	length := len(data)
 	for {
-		c := []byte{}
+		var c []byte
 		curve := pub.Curve
 		k, err := randFieldElement(curve, rand.Reader)
 		if err != nil {
@@ -292,7 +323,7 @@ func Encrypt(pub *PublicKey, data []byte) ([]byte, error) {
 			c = append(c, zeroByteSlice[:(32-leny1)]...)
 		}
 		c = append(c, y1.Bytes()...) // y分量
-		tm := []byte{}
+		var tm []byte
 		if lenx2 < 32 {
 			tm = append(tm, zeroByteSlice[:(32-lenx2)]...)
 		}
@@ -329,7 +360,7 @@ func Decrypt(priv *PrivateKey, data []byte) ([]byte, error) {
 	for i := 0; i < length; i++ {
 		c[i] ^= data[i+96]
 	}
-	tm := []byte{}
+	var tm []byte
 	tm = append(tm, x2.Bytes()...)
 	tm = append(tm, c...)
 	tm = append(tm, y2.Bytes()...)
