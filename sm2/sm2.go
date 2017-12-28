@@ -98,6 +98,8 @@ func kdf(x, y []byte, length int) ([]byte, bool) {
 	ct := 1
 	h := sm3.New()
 	x = append(x, y...)
+
+	/*
 	for i, j := 0, (length+31)/32; i < j; i++ {
 		h.Reset()
 		h.Write(x)
@@ -109,7 +111,28 @@ func kdf(x, y []byte, length int) ([]byte, bool) {
 			c = append(c, hash...)
 		}
 		ct++
+	}*/
+
+	uiLoopCount := length / 32
+	uiFinalCount := length % 32
+
+	for i:=0;i < uiLoopCount;i++{
+		h.Reset()
+		h.Write(x)
+		h.Write(intToBytes(ct))
+		hash := h.Sum(nil)
+		c = append(c, hash...)
+		ct++
 	}
+
+	if uiFinalCount != 0 {
+		h.Reset()
+		h.Write(x)
+		h.Write(intToBytes(ct))
+		hash := h.Sum(nil)
+		c = append(c, hash[:uiFinalCount]...)
+	}
+
 	for i := 0; i < length; i++ {
 		if c[i] != 0 {
 			return c, true
@@ -120,7 +143,7 @@ func kdf(x, y []byte, length int) ([]byte, bool) {
 
 func randFieldElement(c elliptic.Curve, rand io.Reader) (k *big.Int, err error) {
 	params := c.Params()
-	b := make([]byte, params.BitSize/8+8)
+	b := make([]byte, (params.BitSize+7)/8)
 	_, err = io.ReadFull(rand, b)
 	if err != nil {
 		return
@@ -335,7 +358,20 @@ func Encrypt(pub *PublicKey, data []byte) ([]byte, error) {
 		tm = append(tm, y2.Bytes()...)
 		h := sm3.Sm3Sum(tm)
 		c = append(c, h...)
-		ct, ok := kdf(x2.Bytes(), y2.Bytes(), length) // 密文
+
+		var xx2 []byte
+		if lenx2 < 32 {
+			xx2 = append(xx2, zeroByteSlice[:(32-lenx2)]...)
+		}
+		xx2 = append(xx2, x2.Bytes()...)
+
+		var yy2 []byte
+		if leny2 < 32 {
+			yy2 = append(yy2, zeroByteSlice[:(32-leny2)]...)
+		}
+		yy2 = append(yy2, y2.Bytes()...)
+
+		ct, ok := kdf(xx2, yy2, length) // 密文
 		if !ok {
 			continue
 		}
@@ -353,7 +389,20 @@ func Decrypt(priv *PrivateKey, data []byte) ([]byte, error) {
 	x := new(big.Int).SetBytes(data[:32])
 	y := new(big.Int).SetBytes(data[32:64])
 	x2, y2 := curve.ScalarMult(x, y, priv.D.Bytes())
-	c, ok := kdf(x2.Bytes(), y2.Bytes(), length)
+
+	var xx2 []byte
+	if len(x2.Bytes()) < 32 {
+		xx2 = append(xx2, zeroByteSlice[:(32-len(x2.Bytes()))]...)
+	}
+	xx2 = append(xx2, x2.Bytes()...)
+
+	var yy2 []byte
+	if len(y2.Bytes()) < 32 {
+		yy2 = append(yy2, zeroByteSlice[:(32-len(y2.Bytes()))]...)
+	}
+	yy2 = append(yy2, y2.Bytes()...)
+
+	c, ok := kdf(xx2, yy2, length)
 	if !ok {
 		return nil, errors.New("Decrypt: failed to decrypt")
 	}
@@ -361,9 +410,9 @@ func Decrypt(priv *PrivateKey, data []byte) ([]byte, error) {
 		c[i] ^= data[i+96]
 	}
 	var tm []byte
-	tm = append(tm, x2.Bytes()...)
+	tm = append(tm, xx2...)
 	tm = append(tm, c...)
-	tm = append(tm, y2.Bytes()...)
+	tm = append(tm, yy2...)
 	h := sm3.Sm3Sum(tm)
 	if bytes.Compare(h, data[64:96]) != 0 {
 		return c, errors.New("Decrypt: failed to decrypt")
